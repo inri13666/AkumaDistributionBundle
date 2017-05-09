@@ -1,7 +1,7 @@
 AkumaDistributionBundle
 =====================
 
-Implements additional way to load bundles load without any updates of application files.
+Implements additional way to load bundles without any updates of application files.
 
 ## Usage ##
 Modify current kernel of application by extending (*extends AkumaKernel*) from `Akuma\Bundle\DistributionBundle\AkumaKernel`
