@@ -36,7 +36,11 @@ abstract class AkumaKernel extends Kernel
 
         /** @var Bundle $bundle */
         foreach ($foundBundles as $bundle) {
-            $bundles[] = $bundle->getInstance($this);
+            $instance = $bundle->getInstance($this);
+            if (!$instance) {
+                continue;
+            }
+            $bundles[] = $instance;
         }
 
         return $bundles;

@@ -30,6 +30,10 @@ class Bundle
     {
         $bundleClass = $this->getClass();
 
+        if (!class_exists($bundleClass)) {
+            return null;
+        }
+
         return $this->isKernelRequired() ? new $bundleClass($kernel) : new $bundleClass;
     }
 
