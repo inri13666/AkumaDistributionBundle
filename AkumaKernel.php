@@ -2,8 +2,9 @@
 
 namespace Akuma\Bundle\DistributionBundle;
 
-use Akuma\Bundle\DistributionBundle\Model\Bundle;
-use Symfony\Component\HttpKernel\Bundle\BundleInterface;
+use Akuma\Bundle\DistributionBundle\Configuration\BundleConfiguration;
+
+use Symfony\Component\Config\Definition\Processor;
 use Symfony\Component\HttpKernel\Kernel;
 use Symfony\Component\Yaml\Yaml;
 
@@ -15,47 +16,102 @@ abstract class AkumaKernel extends Kernel
     /**
      * Returns an array of bundles to register.
      *
-     * @return BundleInterface[] An array of bundle instances
+     * @param array $bundles
+     *
+     * @return \Symfony\Component\HttpKernel\Bundle\BundleInterface[] An array of bundle instances
      */
-    public function registerBundles()
+    public function registerBundles(array $bundles = [])
     {
 
         $cache = $this->getCacheDir() . DIRECTORY_SEPARATOR . static::CACHE_FILE_NAME;
 
-        $bundles = [];
+        $bundleClasses = array_map(function ($item) {
+            return get_class($item);
+        }, $bundles);
+
+        $bundles = array_combine(array_values($bundleClasses), array_values($bundles));
 
         if (is_readable($cache)) {
-            $foundBundles = unserialize(file_get_contents($cache));
+            $foundBundleResources = unserialize(file_get_contents($cache));
         } else {
-            $foundBundles = $this->findBundles();
+            $roots = array(
+                implode(DIRECTORY_SEPARATOR, [$this->getRootDir(), '..', 'src']),
+                implode(DIRECTORY_SEPARATOR, [$this->getRootDir(), '..', 'vendor']),
+            );
+
+            $foundBundleResources = $this->findBundleResources($roots);
             if (!file_exists(dirname($cache))) {
                 mkdir(dirname($cache), 0777, true);
             }
-            file_put_contents($cache, serialize($foundBundles));
+            file_put_contents($cache, serialize($foundBundleResources));
         }
 
-        /** @var Bundle $bundle */
-        foreach ($foundBundles as $bundle) {
-            $instance = $bundle->getInstance($this);
-            if (!$instance) {
-                continue;
+        $foundBundles = $this->findBundleConfigurations($foundBundleResources);
+
+        $require = [];
+        foreach ($foundBundles as $config) {
+            $bundleClass = $config[BundleConfiguration::NODE_CLASS];
+            if(!array_key_exists($bundleClass, $bundles)){
+                $bundles[$bundleClass] = $this->createInstance($config);
             }
-            $bundles[] = $instance;
+            $require = array_merge($require, $config[BundleConfiguration::NODE_REQUIRE]);
+        }
+
+        foreach ($require as $config){
+            $bundleClass = $config[BundleConfiguration::NODE_CLASS];
+            if(!array_key_exists($bundleClass, $bundles)){
+                $bundles[$bundleClass] = $this->createInstance($config);
+            }
         }
 
         return $bundles;
     }
 
     /**
+     * @param array $config
+     *
+     * @return object
+     */
+    protected function createInstance(array $config)
+    {
+        $bundleClass = $config[BundleConfiguration::NODE_CLASS];
+
+        if ($config[BundleConfiguration::NODE_KERNEL]) {
+            return new $bundleClass($this);
+        }
+
+        return new $bundleClass;
+    }
+
+    /**
+     * @param array $config
+     * @param array $requireBundles
+     *
      * @return array
      */
-    protected function findBundles()
+    protected function buildRequire(array $config, array $requireBundles = [])
     {
-        $roots = array(
-            implode(DIRECTORY_SEPARATOR, [$this->getRootDir(), '..', 'src']),
-            implode(DIRECTORY_SEPARATOR, [$this->getRootDir(), '..', 'vendor']),
-        );
         $bundles = [];
+
+        foreach ($config[BundleConfiguration::NODE_REQUIRE] as $config) {
+            $bundleClass = trim($config[BundleConfiguration::NODE_CLASS], '\\');
+            if (!array_key_exists($bundleClass, $requireBundles)) {
+                $bundles[$bundleClass] = $this->createInstance($config);
+            }
+        }
+
+        return $bundles;
+    }
+
+    /**
+     * @param array $roots
+     *
+     * @return array
+     */
+    protected function findBundleResources(array $roots)
+    {
+        $resources = [];
+
         foreach ($roots as $root) {
             $root = realpath($root);
 
@@ -70,7 +126,7 @@ abstract class AkumaKernel extends Kernel
 
             $filter = new \RecursiveCallbackFilterIterator(
                 $dir,
-                function (\SplFileInfo $current) use (&$bundles) {
+                function (\SplFileInfo $current) use (&$resources) {
                     if (!$current->getRealPath()) {
                         return false;
                     }
@@ -82,24 +138,10 @@ abstract class AkumaKernel extends Kernel
                         return true;
                     } else {
                         $file = $current->getPathname() . '/Resources/config/' . static::BUNDLE_IDENTIFIER;
+
                         if (is_file($file) && is_readable($file)) {
-                            $parsed = Yaml::parse($file);
-                            if (!isset($parsed['class'])) {
-                                return false;
-                            }
 
-                            if (isset($parsed['environment'])) {
-                                $envs = $parsed['environment'];
-                                $envs = is_array($envs) ? $envs : [$envs];
-                                if (!in_array($this->getEnvironment(), $envs)) {
-                                    return false;
-                                }
-                            }
-
-                            $bundleModel = new Bundle();
-                            $bundles[] = $bundleModel->setClass($parsed['class'])
-                                ->setPriority(isset($parsed['priority']) ? (int)$parsed['priority'] : 0)
-                                ->setKernelRequired(isset($parsed['kernel']) ? (bool)$parsed['kernel'] : 0);
+                            $resources[] = $file;
                         }
 
                         return false;
@@ -111,18 +153,48 @@ abstract class AkumaKernel extends Kernel
             $iterator->rewind();
         }
 
-        usort($bundles, function (Bundle $b1, Bundle $b2) {
-            if ($b1->getPriority() > $b2->getPriority()) {
+        return $resources;
+    }
+
+    /**
+     * @param array $bundleResources
+     *
+     * @return array
+     *
+     * @throws \Symfony\Component\Yaml\Exception\ParseException
+     */
+    protected function findBundleConfigurations(array $bundleResources = [])
+    {
+        $bundleConfigs = [];
+
+        foreach ($bundleResources as $file) {
+            $processor = new Processor();
+            $config = $processor->processConfiguration(new BundleConfiguration(), Yaml::parse($file));
+
+            $envs = $config[BundleConfiguration::NODE_ENVIRONMENTS];
+
+            if (!empty($envs) && !in_array($this->getEnvironment(), $envs)) {
+                continue;
+            }
+
+            $bundleConfigs[$config[BundleConfiguration::NODE_CLASS]] = $config;
+        }
+
+        usort($bundleConfigs, function (array $config1, array $config2) {
+            $b1 = $config1[BundleConfiguration::NODE_PRIORITY];
+            $b2 = $config2[BundleConfiguration::NODE_PRIORITY];
+
+            if ($b1 > $b2) {
                 return 1;
             }
 
-            if ($b1->getPriority() < $b2->getPriority()) {
+            if ($b1 < $b2) {
                 return -1;
             }
 
             return 0;
         });
 
-        return $bundles;
+        return $bundleConfigs;
     }
 }

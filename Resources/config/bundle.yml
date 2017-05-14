@@ -1,1 +1,2 @@
-class: 'Akuma\Bundle\DistributionBundle\AkumaDistributionBundle'
+bundle:
+    class: 'Akuma\Bundle\DistributionBundle\AkumaDistributionBundle'
