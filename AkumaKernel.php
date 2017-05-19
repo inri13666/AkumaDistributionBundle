@@ -169,7 +169,10 @@ abstract class AkumaKernel extends Kernel
 
         foreach ($bundleResources as $file) {
             $processor = new Processor();
-            $config = $processor->processConfiguration(new BundleConfiguration(), Yaml::parse($file));
+            $config = $processor->processConfiguration(
+                new BundleConfiguration(),
+                Yaml::parse(file_get_contents($file))
+            );
 
             $envs = $config[BundleConfiguration::NODE_ENVIRONMENTS];
 
