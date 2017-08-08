@@ -1,0 +1,9 @@
+services:
+    akuma.distribution.registry:
+        class: Akuma\Bundle\DistributionBundle\Registry\DistributionRegistry
+
+    akuma.distribution.step_processor:
+        class: Akuma\Bundle\DistributionBundle\Processor\DistributionStepProcessor
+        arguments:
+            - '@akuma.distribution.registry'
+            - '@event_dispatcher'
